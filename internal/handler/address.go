@@ -40,8 +40,8 @@ func SetupRouter(h *AddressHandler, cfg *config.Config, redisClient *redis.Clien
 
 	// API routes - protected by signature + rate limit
 	r.Group(func(api chi.Router) {
-		api.Use(middleware.NewSignatureMiddleware(cfg, redisClient))
 		api.Use(middleware.NewLimiterMiddleware(cfg, redisClient))
+		api.Use(middleware.NewSignatureMiddleware(cfg, redisClient))
 		api.Post("/api/v1/address/parse", h.ParseAddress)
 	})
 
