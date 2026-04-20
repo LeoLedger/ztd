@@ -1,46 +1,33 @@
-version: "2"
+postgres:
+  image: postgres:16-alpine
+  environment:
+    - POSTGRES_DB=address_parse
+    - POSTGRES_USER=postgres
+    - POSTGRES_PASSWORD=postgres
+  volumes:
+    - pgdata:/var/lib/postgresql/data
+    - ./migrations:/docker-entrypoint-initdb.d
+  ports:
+    - "5432:5432"
 
-services:
-  app:
-    build: .
-    ports:
-      - "8080:8080"
-    depends_on:
-      - postgres
-      - redis
-    env_file:
-      - .env
-    volumes:
-      - ./migrations:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+redis:
+  image: redis:7-alpine
+  ports:
+    - "6379:6379"
+  volumes:
+    - redisdata:/data
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_DB=address_parse
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redisdata:/data
+app:
+  build: .
+  ports:
+    - "8080:8080"
+  env_file:
+    - .env
+  volumes:
+    - ./migrations:/docker-entrypoint-initdb.d
+  links:
+    - postgres
+    - redis
 
 volumes:
   pgdata:
