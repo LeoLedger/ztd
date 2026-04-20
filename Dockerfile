@@ -5,6 +5,10 @@ WORKDIR /app
 
 RUN apk add --no-cache git ca-certificates
 
+# Use goproxy.cn as the Go module proxy to avoid proxy.golang.org connectivity issues in certain network environments
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+
 COPY go.mod go.sum ./
 RUN go mod download
 
