@@ -26,7 +26,6 @@ RUN apk add --no-cache ca-certificates tzdata
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 COPY --from=builder /app/server .
-COPY --from=builder /app/.env.example .env
 
 RUN chown -R appuser:appgroup /app
 
