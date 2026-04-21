@@ -86,6 +86,9 @@ func (rl *RateLimiter) refillMemTokensLocked() {
 
 // Allow checks whether a request from the given appID and IP is permitted.
 func (rl *RateLimiter) Allow(ctx context.Context, appID, ip string) (bool, error) {
+	if rl.globalLimit == 0 && rl.appLimit == 0 && rl.ipLimit == 0 {
+		return true, nil
+	}
 	if rl.redisAvail {
 		return rl.allowRedis(ctx, appID, ip)
 	}
@@ -119,6 +122,9 @@ func (rl *RateLimiter) allowRedis(ctx context.Context, appID, ip string) (bool, 
 }
 
 func (rl *RateLimiter) allowMem(appID, ip string) bool {
+	if rl.globalLimit == 0 && rl.appLimit == 0 && rl.ipLimit == 0 {
+		return true
+	}
 	rl.memMu.Lock()
 	defer rl.memMu.Unlock()
 

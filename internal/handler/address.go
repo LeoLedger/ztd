@@ -91,11 +91,13 @@ func (h *AddressHandler) ParseAddress(w http.ResponseWriter, r *http.Request) {
 		if req.Text != "" {
 			// For free-text input, skip pre-extraction to avoid contamination.
 			// Pass the raw text as OriginalText so LLM can parse all fields cleanly from scratch.
+			// Also set Address = OriginalText so the fallback rule engine and history
+			// hash both have a non-empty value to work with.
 			effective = model.RawFields{
 				Name:         "",
 				Phone:        "",
 				Company:      "",
-				Address:      "",
+				Address:      req.Text,
 				OriginalText: req.Text,
 			}
 		} else {
@@ -124,7 +126,12 @@ func (h *AddressHandler) ParseAddress(w http.ResponseWriter, r *http.Request) {
 
 	requestID := uuid.New().String()
 	appID := r.Header.Get("X-App-Id")
-	inputHash := parser.HashAddress(effective.Address)
+	var inputHash string
+	if effective.Address != "" {
+		inputHash = parser.HashAddress(effective.Address)
+	} else {
+		inputHash = parser.HashAddress(effective.OriginalText)
+	}
 
 	history := repository.BuildParseHistory(
 		requestID, appID, inputHash, &effective, result.Response, result.Method, result.ParseTimeMs,
