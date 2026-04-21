@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,11 +35,9 @@ func NewAddressHandler(parserService *service.ParserService, historyRepo reposit
 func SetupRouter(h *AddressHandler, cfg *config.Config, redisClient *redis.Client) http.Handler {
 	r := chi.NewRouter()
 
-	// Health endpoint - no auth required
 	r.Use(LogMiddleware)
 	r.Get("/health", h.HealthCheck)
 
-	// API routes - protected by signature + rate limit
 	r.Group(func(api chi.Router) {
 		api.Use(middleware.NewLimiterMiddleware(cfg, redisClient))
 		api.Use(middleware.NewSignatureMiddleware(cfg, redisClient))
@@ -52,37 +51,72 @@ func (h *AddressHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	response.SuccessWithMessage(w, "ok", map[string]string{"status": "healthy"})
 }
 
+// ParseAddress handles three input formats:
+//   - Plain text body: the entire body is treated as a free-text address string.
+//   - JSON { "text": "..." }: new format — text is extracted via regex then parsed.
+//   - JSON { "name"/"phone"/"company"/"address": "..." }: legacy format — used as-is.
 func (h *AddressHandler) ParseAddress(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		response.BadRequest(w, "failed to read body")
 		return
 	}
-	// Replace unescaped literal whitespace with a space so the JSON decoder sees
-	// valid JSON even when the client sends raw newlines/tabs inside string values.
-	cooked := replaceUnescapedNewlines(raw)
 
+	var effective model.RawFields
 	var req model.ParseRequest
-	if err := json.Unmarshal(cooked, &req); err != nil {
-		response.BadRequest(w, "invalid JSON body")
-		return
-	}
 
-	if req.Address == "" {
-		response.BadRequest(w, "address is required")
-		return
-	}
+	// Plain text (non-JSON) fast path.
+	if len(raw) > 0 && raw[0] != '{' && raw[0] != '[' && raw[0] != ' ' {
+		text := strings.TrimSpace(string(raw))
+		if text == "" {
+			response.BadRequest(w, "text is required")
+			return
+		}
+		// Skip pre-extraction; send raw text to LLM for clean parsing.
+		effective = model.RawFields{
+			Name:         "",
+			Phone:        "",
+			Company:      "",
+			Address:      "",
+			OriginalText: text,
+		}
+	} else {
+		// JSON body: supports both { "text": "..." } and legacy structured fields.
+		cooked := replaceUnescapedNewlines(raw)
+		if err := json.Unmarshal(cooked, &req); err != nil {
+			response.BadRequest(w, "invalid JSON body")
+			return
+		}
 
-	// Normalize input: trim whitespace and unify separator characters
-	req.Name = parser.NormalizeText(req.Name)
-	req.Phone = parser.NormalizeText(req.Phone)
-	req.Company = parser.NormalizeText(req.Company)
-	req.Address = parser.NormalizeText(req.Address)
+		if req.Text != "" {
+			// For free-text input, skip pre-extraction to avoid contamination.
+			// Pass the raw text as OriginalText so LLM can parse all fields cleanly from scratch.
+			effective = model.RawFields{
+				Name:         "",
+				Phone:        "",
+				Company:      "",
+				Address:      "",
+				OriginalText: req.Text,
+			}
+		} else {
+			// Legacy structured fields.
+			if req.Address == "" {
+				response.BadRequest(w, "text or address is required")
+				return
+			}
+			effective = model.RawFields{
+				Name:    parser.NormalizeText(req.Name),
+				Phone:   parser.NormalizeText(req.Phone),
+				Company: parser.NormalizeText(req.Company),
+				Address: parser.NormalizeText(req.Address),
+			}
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	result, err := h.parserService.Parse(ctx, &req)
+	result, err := h.parserService.Parse(ctx, &effective)
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, response.CodeParseFailed, "address parsing failed: "+err.Error())
 		return
@@ -90,21 +124,15 @@ func (h *AddressHandler) ParseAddress(w http.ResponseWriter, r *http.Request) {
 
 	requestID := uuid.New().String()
 	appID := r.Header.Get("X-App-Id")
-	inputHash := parser.HashAddress(req.Address)
+	inputHash := parser.HashAddress(effective.Address)
 
 	history := repository.BuildParseHistory(
-		requestID, appID, inputHash, &req, result.Response, result.Method, result.ParseTimeMs,
+		requestID, appID, inputHash, &effective, result.Response, result.Method, result.ParseTimeMs,
 	)
 
 	if h.historyRepo != nil {
-		// Use a detached goroutine with its own context and a hard timeout so it cannot
-		// outlive the request. Panic inside the goroutine is recovered to prevent crashes.
 		go func(hist *model.ParseHistory) {
-			defer func() {
-				if p := recover(); p != nil {
-					// log or suppress — do not crash the service
-				}
-			}()
+			defer func() { recover() }()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = h.historyRepo.Save(ctx, hist)

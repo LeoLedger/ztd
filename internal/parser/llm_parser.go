@@ -50,29 +50,55 @@ func NewLLMParser(cfg *config.Config) *LLMParser {
 	}
 }
 
-func (p *LLMParser) Parse(ctx context.Context, address string) (*model.ParseResponse, error) {
+func (p *LLMParser) Parse(ctx context.Context, fields *model.RawFields) (*model.ParseResponse, error) {
 	if p.apiKey == "" {
 		return nil, fmt.Errorf("LLM API key not configured")
 	}
 
-	prompt := fmt.Sprintf(`你是一个专业的地址解析系统。请将以下地址解析为结构化JSON，只返回JSON，不要任何其他文字。
-JSON字段：province(省，如广东省)、city(市，如深圳市)、district(区/县，如南山区)、street(街道，如桃源街道)、detail(详细地址)
+	// Use the ORIGINAL full text as the primary source for LLM.
+	// The pre-extracted fields (name/phone/company) are used as hints to confirm
+	// the LLM's own extraction, not as the definitive answer.
+	// This is critical for out-of-order input where "广东省深圳市... 智腾达科技"
+	// would otherwise lose the company name after Preprocess strips CJK spaces.
+	originalText := fields.OriginalText
+	if originalText == "" {
+		originalText = fields.Address
+	}
+	extra := buildExtraContext(fields)
 
-输入地址：%s
+	systemPrompt := `你是一个专业的中国地址解析系统，负责将任意格式的地址文本解析为结构化字段。
 
-规则：
-1. 如果地址中缺少省份或城市信息，应根据中国行政区划知识进行合理补全。例如"南山区桃源街道"应补全为 province=广东省、city=深圳市、district=南山区、street=桃源街道
-2. 补全时应根据地址的语义和常见行政区划知识推断，不能凭空编造不确定的信息
-3. 如果输入地址存在错别字、异体字、格式混乱等错误，应在对应字段中进行合理修正
-4. 详细地址部分（门牌号、楼栋、单元等）必须保留原样，不做修改
+## 你的职责：
+1. 地址补全：根据中国行政区划知识，从地址文本中提取或合理推断省份、城市、区县。
+2. 姓名/电话/公司识别：如果输入文本中包含联系人信息（姓名、电话）、公司名称，应一并提取。
+3. 详细地址保留：门牌号、楼栋、单元、房间号等详细地址必须保留原始内容。
+4. 允许字段为空：输入文本中缺失的字段可以为空字符串，但不要凭空编造。
 
-只输出JSON，不要解释。`, address)
+## 严格禁止：
+- 不要修改已提供的确切信息（如姓名、电话、公司名）。
+- 不要凭空添加地址中不存在的详细信息。
+
+## 输出格式：
+仅返回标准 JSON 格式，无需任何解释。JSON 字段：name(联系人姓名)、phone(联系电话)、company(公司名称)、province(省)、city(市)、district(区/县)、street(街道)、detail(详细地址)`
+
+	userPrompt := fmt.Sprintf(`请将以下地址文本解析为结构化JSON。
+
+输入文本：%s
+%s
+
+要求：
+- 仔细分析输入文本，将其中的姓名、电话、公司名称、省市县区街道、详细地址分别提取到对应JSON字段。
+- 如果地址中缺少省份或城市，应根据中国行政区划知识进行合理推断补全。
+- 如果存在错别字、异体字，应在对应字段中进行合理修正。
+- 如果某字段在输入文本中缺失则留空，不要编造不存在的信息。
+- 详细地址部分（门牌号、楼栋、单元、房间号等）必须保留原样。
+- 直接输出JSON，不要任何解释文字。`, originalText, extra)
 
 	reqBody := qwenRequest{
 		Model: p.model,
 		Messages: []qwenMessage{
-			{Role: "system", Content: "你是一个专业的地址解析系统。如果地址缺少省份或城市，应根据中国行政区划知识合理补全；同时修正错别字和格式错误。详细地址部分必须保留原样。允许部分字段为空。只返回JSON格式，不要任何解释。"},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
 		},
 		Stream: false,
 	}
@@ -84,7 +110,7 @@ JSON字段：province(省，如广东省)、city(市，如深圳市)、district(
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		result, err := p.doParse(ctx, jsonBody)
+		result, err := p.doParse(ctx, jsonBody, fields, originalText)
 		if err == nil {
 			return result, nil
 		}
@@ -94,7 +120,7 @@ JSON字段：province(省，如广东省)、city(市，如深圳市)、district(
 	return nil, fmt.Errorf("LLM parse failed after retries: %w", lastErr)
 }
 
-func (p *LLMParser) doParse(ctx context.Context, jsonBody []byte) (*model.ParseResponse, error) {
+func (p *LLMParser) doParse(ctx context.Context, jsonBody []byte, fields *model.RawFields, originalText string) (*model.ParseResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -132,7 +158,93 @@ func (p *LLMParser) doParse(ctx context.Context, jsonBody []byte) (*model.ParseR
 
 	result.FullAddr = buildFullAddressFromLLM(&result)
 
+	// Trust pre-extracted name/phone/company when available.
+	// When they are empty (e.g. company appears after the address portion and
+	// extractCompany fails to catch it), fall back to LLM's own extraction.
+	if fields.Name != "" {
+		result.Name = fields.Name
+	}
+	if fields.Phone != "" {
+		result.Phone = fields.Phone
+	}
+	if fields.Company != "" {
+		result.Company = fields.Company
+	} else {
+		// extractCompany failed (company appears after address or lacks a marker keyword).
+		// Fallback: scan OriginalText for a valid company name substring.
+		if originalText != "" {
+			if candidate := findCompanyInText(originalText); candidate != "" {
+				result.Company = candidate
+			}
+		}
+		// If no candidate found, fall back to LLM's company only if clean.
+		if result.Company == "" && !looksLikeAddressContaminated(result.Company) {
+			// keep LLM's result
+		} else if result.Company == "" {
+			// already empty, nothing to do
+		} else {
+			// contaminated → try OriginalText scan one more time
+			if candidate := findCompanyInText(originalText); candidate != "" {
+				result.Company = candidate
+			} else {
+				result.Company = ""
+			}
+		}
+	}
+
 	return &result, nil
+}
+
+// findCompanyInText scans originalText for a company name ending with a known marker
+// keyword. Returns the found company name or "". This is used as a fallback when
+// extractCompany failed to find a company in the preprocessed address.
+func findCompanyInText(text string) string {
+	if text == "" {
+		return ""
+	}
+	markers := []string{"有限公司", "股份有限公司", "责任公司", "集团有限公司",
+		"公司", "集团", "科技", "Co.", "LTD", "Inc."}
+	for _, marker := range markers {
+		idx := strings.Index(text, marker)
+		if idx > 1 {
+			// Back up to find a reasonable starting position (max ~20 chars before marker).
+			start := idx - 20
+			if start < 0 {
+				start = 0
+			}
+			candidate := strings.TrimSpace(text[start : idx+len(marker)])
+			// Valid candidate must be at least 4 chars and not consist of address fragments.
+			if len(candidate) >= 4 && !looksLikeAddressContaminated(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+// looksLikeAddressContaminated returns true if s looks like a company name
+// that was contaminated with address fragments (e.g. "广东省深圳市... 智腾达科技"
+// ends up as a single company field with province/city in it).
+// Detection heuristic: s contains a known province/city abbreviation or is
+// suspiciously long (>= 30 chars suggests address+company merge).
+func looksLikeAddressContaminated(s string) bool {
+	if len(s) >= 30 {
+		return true
+	}
+	contaminants := []string{
+		"省", "市", "区", "县", "街道", "镇", "乡",
+		"路", "号", "栋", "楼", "室", "单元",
+		"大道", "广场", "大厦", "花园", "中心",
+		"科技园", "工业园", "创业园",
+	}
+	count := 0
+	for _, c := range contaminants {
+		if strings.Contains(s, c) {
+			count++
+		}
+	}
+	// Contains two or more address markers → likely contaminated.
+	return count >= 2
 }
 
 // cleanJSONResponse strips markdown fences and extracts the first JSON object.
@@ -192,4 +304,22 @@ func buildFullAddressFromLLM(r *model.ParseResponse) string {
 
 func joinNonEmpty(parts []string, sep string) string {
 	return strings.Join(parts, sep)
+}
+
+// buildExtraContext formats pre-extracted fields as a hint block appended to the prompt.
+func buildExtraContext(f *model.RawFields) string {
+	parts := []string{}
+	if f.Name != "" {
+		parts = append(parts, "已提取姓名: "+f.Name)
+	}
+	if f.Phone != "" {
+		parts = append(parts, "已提取电话: "+f.Phone)
+	}
+	if f.Company != "" {
+		parts = append(parts, "已提取公司: "+f.Company)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n参考信息（已从原文提取）：\n" + strings.Join(parts, "\n")
 }

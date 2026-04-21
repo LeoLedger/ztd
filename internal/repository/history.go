@@ -206,7 +206,7 @@ type HistoryRepo interface {
 	Close() error
 }
 
-func BuildParseHistory(requestID, appID, inputHash string, req *model.ParseRequest, result *model.ParseResponse, method string, parseTimeMs int) *model.ParseHistory {
+func BuildParseHistory(requestID, appID, inputHash string, req *model.RawFields, result *model.ParseResponse, method string, parseTimeMs int) *model.ParseHistory {
 	return &model.ParseHistory{
 		RequestID:      requestID,
 		AppID:          appID,

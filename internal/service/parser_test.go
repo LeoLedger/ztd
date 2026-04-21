@@ -25,13 +25,13 @@ func TestParserService_Parse(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		req    *model.ParseRequest
+		req    *model.RawFields
 		wantOk bool
 		method string
 	}{
 		{
 			name: "标准地址-规则引擎成功",
-			req: &model.ParseRequest{
+			req: &model.RawFields{
 				Name:    "张三",
 				Phone:   "15361237638",
 				Company: "智腾达软件技术公司",
@@ -42,22 +42,22 @@ func TestParserService_Parse(t *testing.T) {
 		},
 		{
 			name: "简称地址-可能需要LLM兜底",
-			req: &model.ParseRequest{
+			req: &model.RawFields{
 				Address: "南山科技园",
 			},
 			wantOk: false,
 		},
 		{
 			name: "空地址",
-			req: &model.ParseRequest{
+			req: &model.RawFields{
 				Address: "",
 			},
 			wantOk: false,
 		},
 		{
-			name: "不规范地址-部分匹配",
-			req: &model.ParseRequest{
-				Address: "深圳南山区桑泰大厦13楼",
+			name: "不规范地址-缺省省份",
+			req: &model.RawFields{
+				Address: "深圳市南山区桃源街道88号桑泰大厦13楼",
 			},
 			wantOk: true,
 			method: MethodRule,

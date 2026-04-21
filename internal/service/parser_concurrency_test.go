@@ -54,7 +54,7 @@ func TestParserService_ConcurrentParse(t *testing.T) {
 			for j := 0; j < iterations; j++ {
 				addr := addresses[(idx+j)%len(addresses)]
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				req := &model.ParseRequest{
+				req := &model.RawFields{
 					Name:    "测试用户",
 					Phone:   "13800138000",
 					Company: "测试公司",
@@ -148,7 +148,7 @@ func TestParserService_ConcurrentSameAddress(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				req := &model.ParseRequest{
+				req := &model.RawFields{
 					Name:    "张三",
 					Phone:   "15361237638",
 					Company: "智腾达软件技术公司",
