@@ -48,6 +48,26 @@ func (r RawFields) Text() string {
 	return strings.Join(parts, " ")
 }
 
+// DistrictCorrection flags a detected district error and provides the corrected value.
+// CorrectedDistrict is empty when the district is already valid.
+type DistrictCorrection struct {
+	InputDistrict     string `json:"input_district,omitempty"`
+	CorrectedDistrict string `json:"corrected_district,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	// CorrectionType distinguishes the mechanism used:
+	//   "invalid_district"  — district is not a valid district of the detected city
+	//   "street_mismatch"   — district is valid for the city but the street belongs to a different district
+	//   "missing"           — district was absent and has been inferred (use DistrictAutoFill instead)
+	CorrectionType string `json:"correction_type,omitempty"`
+}
+
+// DistrictAutoFill signals that the original input lacked a district and one was inferred.
+// OriginalDistrict is always empty when this struct is present.
+type DistrictAutoFill struct {
+	InferredDistrict string `json:"inferred_district,omitempty"`
+	InferenceSource  string `json:"inference_source,omitempty"`
+}
+
 type ParseResponse struct {
 	Name     string `json:"name,omitempty"`
 	Phone    string `json:"phone,omitempty"`
@@ -58,6 +78,11 @@ type ParseResponse struct {
 	Street   string `json:"street,omitempty"`
 	Detail   string `json:"detail,omitempty"`
 	FullAddr string `json:"full_address,omitempty"`
+
+	// DistrictCorrection is non-nil when the parsed district is invalid for the detected city.
+	DistrictCorrection *DistrictCorrection `json:"district_correction,omitempty"`
+	// DistrictAutoFill is non-nil when no district was present in the input but one was inferred.
+	DistrictAutoFill *DistrictAutoFill `json:"district_auto_fill,omitempty"`
 }
 
 type ParseHistory struct {

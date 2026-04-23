@@ -19,9 +19,10 @@ const (
 )
 
 type ParserService struct {
-	ruleEngine *parser.RuleEngine
-	llmParser  *parser.LLMParser
-	cache      *parser.Cache
+	ruleEngine        *parser.RuleEngine
+	llmParser         *parser.LLMParser
+	cache             *parser.Cache
+	districtValidator *parser.DistrictValidator
 }
 
 func NewParserService(cfg *config.Config, redisClient *redis.Client) *ParserService {
@@ -30,10 +31,14 @@ func NewParserService(cfg *config.Config, redisClient *redis.Client) *ParserServ
 		cache, _ = parser.NewCache(cfg.Redis.URL)
 	}
 
+	geocoder := parser.NewAMapGeocoder(&cfg.Geocoder)
+	districtValidator := parser.NewDistrictValidatorWithGeocoder(geocoder)
+
 	return &ParserService{
-		ruleEngine: parser.NewRuleEngine(),
-		llmParser:  parser.NewLLMParser(cfg),
-		cache:      cache,
+		ruleEngine:        parser.NewRuleEngine(),
+		llmParser:         parser.NewLLMParser(cfg),
+		cache:             cache,
+		districtValidator: districtValidator,
 	}
 }
 
@@ -100,6 +105,9 @@ func (s *ParserService) Parse(ctx context.Context, req *model.RawFields) (*Parse
 			llmResult.Company = cleanCompany(llmResult.Company)
 			llmResult.Name = cleanName(llmResult.Name, llmResult.Phone)
 
+			// Apply district validation and auto-fill.
+			s.applyDistrictValidation(ctx, llmResult, rawText)
+
 			if s.cache != nil {
 				data, _ := parser.SerializeResponse(llmResult)
 				_ = s.cache.Set(ctx, cacheKey, data, 24*time.Hour)
@@ -116,7 +124,10 @@ func (s *ParserService) Parse(ctx context.Context, req *model.RawFields) (*Parse
 	// Fallback: rule engine (only when LLM is unavailable or failed).
 	// Use the address field directly — name/phone/company were already stripped by
 	// ExtractFields in the handler layer and reassembled into req.Address.
-	addr := parser.Preprocess(req.Address)
+	// Also deduplicate repeated administrative prefixes so the city extractor doesn't
+	// match a city name buried inside the company name (e.g. "深圳市" in "深圳市XXX公司，惠州..."
+	// would be matched before the actual "惠州" in the address portion).
+	addr := parser.Preprocess(parser.DeduplicateAdministrativePrefix(req.Address))
 	if result, ok := s.ruleEngine.Parse(addr); ok {
 		// Passthrough structured fields when present (e.g. from legacy API format).
 		if req.Name != "" {
@@ -128,6 +139,9 @@ func (s *ParserService) Parse(ctx context.Context, req *model.RawFields) (*Parse
 		if req.Company != "" {
 			result.Company = req.Company
 		}
+
+		// Apply district validation and auto-fill.
+		s.applyDistrictValidation(ctx, result, req.Address)
 
 		if s.cache != nil {
 			data, _ := parser.SerializeResponse(result)
@@ -236,4 +250,70 @@ func cleanName(name, phone string) string {
 		return ""
 	}
 	return name
+}
+
+// applyDistrictValidation runs district correction and auto-fill on the parsed result.
+// It is called after every successful parse (LLM or rule engine) and mutates resp in place.
+func (s *ParserService) applyDistrictValidation(ctx context.Context, resp *model.ParseResponse, originalText string) {
+	if resp == nil {
+		return
+	}
+
+	city := parser.NormalizeCity(strings.TrimSpace(resp.City))
+	district := strings.TrimSpace(resp.District)
+	street := strings.TrimSpace(resp.Street)
+	detail := strings.TrimSpace(resp.Detail)
+
+	// Attempt 1: district is present — validate it.
+	if district != "" {
+		correction := s.districtValidator.ValidateAndCorrect(city, district, street, detail)
+		if correction != nil {
+			resp.DistrictCorrection = correction
+			if correction.CorrectedDistrict != "" {
+				resp.District = correction.CorrectedDistrict
+			}
+			// Even when district is corrected, continue to autofill — it may
+			// improve street/detail from originalText. Avoid early-return.
+		}
+	}
+
+	// Attempt 2 (or fallback): district is missing or uncorrectable —
+	// try to auto-fill it. AutoFillDistrictWithOriginal searches:
+	// street → detail → original text → geocoder, in that order.
+	// Runs regardless of whether Attempt 1 corrected the district,
+	// so that street/detail can still be enriched from originalText.
+	if city != "" {
+		autoFill := s.districtValidator.AutoFillDistrictWithOriginal(ctx, city, district, street, detail, originalText)
+		if autoFill != nil {
+			resp.DistrictAutoFill = autoFill
+			resp.District = autoFill.InferredDistrict
+		}
+	}
+
+	// Always rebuild full_addr after any district change.
+	if resp.District != "" {
+		resp.FullAddr = rebuildFullAddress(resp)
+	}
+}
+
+// rebuildFullAddress reconstructs the full address string from a ParseResponse
+// after district correction/fill updates the District field.
+func rebuildFullAddress(r *model.ParseResponse) string {
+	parts := []string{}
+	if r.Province != "" {
+		parts = append(parts, r.Province)
+	}
+	if r.City != "" {
+		parts = append(parts, r.City)
+	}
+	if r.District != "" {
+		parts = append(parts, r.District)
+	}
+	if r.Street != "" {
+		parts = append(parts, r.Street)
+	}
+	if r.Detail != "" {
+		parts = append(parts, r.Detail)
+	}
+	return strings.Join(parts, " ")
 }

@@ -10,12 +10,18 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	LLM      LLMConfig
-	Auth     AuthConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	Redis     RedisConfig
+	LLM       LLMConfig
+	Auth      AuthConfig
 	RateLimit RateLimitConfig
+	Geocoder  GeocoderConfig
+}
+
+type GeocoderConfig struct {
+	APIKey  string
+	BaseURL string
 }
 
 type ServerConfig struct {
@@ -75,6 +81,10 @@ func Load() *Config {
 				Global: getEnvInt("RATE_LIMIT_GLOBAL", 5000),
 				App:    getEnvInt("RATE_LIMIT_APP", 500),
 				IP:     getEnvInt("RATE_LIMIT_IP", 1000),
+			},
+			Geocoder: GeocoderConfig{
+				APIKey:  getEnv("GEOCODER_API_KEY", ""),
+				BaseURL: getEnv("GEOCODER_BASE_URL", "https://restapi.amap.com/v3"),
 			},
 		}
 
