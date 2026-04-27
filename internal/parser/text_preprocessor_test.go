@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -147,5 +148,40 @@ func TestExtractFields_CommaSeparatedWithCompany(t *testing.T) {
 	}
 	if fields.Address == "" {
 		t.Error("Address is empty, want non-empty")
+	}
+}
+
+func TestExtractFields_ThreeCharName_CommaSeparated(t *testing.T) {
+	// Three-character name (surname + 2-char given name) followed by comma.
+	// Regression: "李四安" must NOT be truncated to "李四".
+	fields := ExtractFields("李四安,0769-81510419,广东省深圳市罗湖区深南东路5047号")
+	if fields.Name != "李四安" {
+		t.Errorf("Name = %q, want %q", fields.Name, "李四安")
+	}
+	if fields.Phone != "076981510419" {
+		t.Errorf("Phone = %q, want %q", fields.Phone, "076981510419")
+	}
+	if fields.Address == "" {
+		t.Error("Address is empty, want non-empty")
+	}
+	// Remaining address must not contain the name fragment "安,".
+	if strings.Contains(fields.Address, "安,") {
+		t.Errorf("Address = %q should not contain '安,' (name fragment)", fields.Address)
+	}
+}
+
+func TestExtractFields_ThreeCharName_SpaceSeparated(t *testing.T) {
+	// Three-character name followed by space.
+	fields := ExtractFields("李四安 0769-81510419 广东省深圳市罗湖区深南东路5047号")
+	if fields.Name != "李四安" {
+		t.Errorf("Name = %q, want %q", fields.Name, "李四安")
+	}
+}
+
+func TestExtractFields_TwoCharName_AfterThreeChar(t *testing.T) {
+	// Two consecutive 3-char names: stop at first name.
+	fields := ExtractFields("李四安 张三 13812345678")
+	if fields.Name != "李四安" {
+		t.Errorf("Name = %q, want %q", fields.Name, "李四安")
 	}
 }

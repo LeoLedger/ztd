@@ -178,15 +178,22 @@ func extractName(buf string) string {
 
 	runes := []rune(buf)
 
-	// Strategy 1: known surname + 1-2 character given name — scan original buffer.
+	// Strategy 1: known surname + 1-3 character given name — longest match wins.
+	// Use longestMatch to prefer "李四安" (surname+2) over "李四" (surname+1)
+	// when the 3rd character is also Han and the name is followed by a known
+	// delimiter (comma, space, digit) that marks the end of the name field.
+	longestMatch := ""
 	for i := 0; i < len(runes); i++ {
 		s1 := string(runes[i])
 		if !surnames[s1] {
 			continue
 		}
-		for givenLen := 1; givenLen <= 2; givenLen++ {
+		// Try 3-char given name first (surname+2), then 2-char, then 1-char.
+		// This ensures we always get the longest valid match.
+		longest := 1 // default: 1-char given name
+		for givenLen := 2; givenLen >= 1; givenLen-- {
 			if i+givenLen >= len(runes) {
-				break
+				continue
 			}
 			given := runes[i+1 : i+1+givenLen]
 			valid := true
@@ -196,10 +203,78 @@ func extractName(buf string) string {
 					break
 				}
 			}
-			if valid {
-				return string(runes[i : i+1+givenLen])
+			if !valid {
+				continue
+			}
+			// Check the character immediately after the name.
+			// Stop if it's a known delimiter (comma, space, digit).
+			// This disambiguates "李四安,电话" (name=李四安) from
+			// "李四张三" (two consecutive 2-char names, stop at 李四).
+			afterNameIdx := i + 1 + givenLen
+			if afterNameIdx >= len(runes) {
+				longest = givenLen
+				break
+			}
+			after := runes[afterNameIdx]
+			if after == ',' || after == '，' || unicode.IsSpace(after) || (after >= '0' && after <= '9') {
+				longest = givenLen
+				break
+			}
+			// Character after name is Han but not a known delimiter.
+			// Keep trying shorter lengths (don't break yet).
+		}
+		if longest == 1 {
+			// Fallback: 1-char given name always valid.
+			longest = 1
+		}
+		candidate := string(runes[i : i+1+longest])
+		// Accept if it's longer than the current best, or equally long and
+		// followed by a delimiter (higher confidence).
+		afterIdx := i + 1 + longest
+		candidateFollowedByDelimiter := false
+		if afterIdx < len(runes) {
+			after := runes[afterIdx]
+			candidateFollowedByDelimiter = after == ',' || after == '，' || unicode.IsSpace(after) || (after >= '0' && after <= '9')
+		}
+		afterIdxCurrent := -1
+		currentFollowedByDelimiter := false
+		if longestMatch != "" {
+			// Find where longestMatch ends in the rune array.
+			currentRunes := []rune(longestMatch)
+			for j := 0; j <= i; j++ {
+				if j+len(currentRunes) <= len(runes) {
+					match := true
+					for k := 0; k < len(currentRunes); k++ {
+						if runes[j+k] != currentRunes[k] {
+							match = false
+							break
+						}
+					}
+					if match {
+						afterIdxCurrent = j + len(currentRunes)
+						if afterIdxCurrent < len(runes) {
+							afterC := runes[afterIdxCurrent]
+							currentFollowedByDelimiter = afterC == ',' || afterC == '，' || unicode.IsSpace(afterC) || (afterC >= '0' && afterC <= '9')
+						}
+						break
+					}
+				}
 			}
 		}
+		shouldReplace := false
+		if candidateFollowedByDelimiter && !currentFollowedByDelimiter {
+			shouldReplace = true
+		} else if !currentFollowedByDelimiter && len(candidate) > len(longestMatch) {
+			shouldReplace = true
+		} else if candidateFollowedByDelimiter == currentFollowedByDelimiter && len(candidate) > len(longestMatch) {
+			shouldReplace = true
+		}
+		if shouldReplace {
+			longestMatch = candidate
+		}
+	}
+	if longestMatch != "" {
+		return longestMatch
 	}
 
 	// Strategy 2: common 2-char given name without a known surname.
