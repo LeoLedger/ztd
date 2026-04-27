@@ -89,15 +89,15 @@ func (h *AddressHandler) ParseAddress(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.Text != "" {
-			// For free-text input, skip pre-extraction to avoid contamination.
-			// Pass the raw text as OriginalText so LLM can parse all fields cleanly from scratch.
-			// Also set Address = OriginalText so the fallback rule engine and history
-			// hash both have a non-empty value to work with.
+			// Pre-extract name/phone/company so they are available as trust-overrides
+			// in doParse, even if the LLM fails to parse the comma-separated format.
+			// OriginalText is still passed intact so the LLM has the full raw context.
+			extracted := parser.ExtractFields(req.Text)
 			effective = model.RawFields{
-				Name:         "",
-				Phone:        "",
-				Company:      "",
-				Address:      req.Text,
+				Name:         extracted.Name,
+				Phone:        extracted.Phone,
+				Company:      extracted.Company,
+				Address:      extracted.Address,
 				OriginalText: req.Text,
 			}
 		} else {

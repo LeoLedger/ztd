@@ -118,3 +118,34 @@ func TestExtractFields_MultipleSpaces(t *testing.T) {
 		t.Errorf("Phone = %q, want %q", fields.Phone, "13812345678")
 	}
 }
+
+func TestExtractFields_CommaSeparated(t *testing.T) {
+	// Format: name,phone,address — no spaces, only commas.
+	fields := ExtractFields("李四,0769-81510419,广东省深圳市罗湖区深南东路5047号")
+	if fields.Name != "李四" {
+		t.Errorf("Name = %q, want %q", fields.Name, "李四")
+	}
+	if fields.Phone != "076981510419" {
+		t.Errorf("Phone = %q, want %q", fields.Phone, "076981510419")
+	}
+	if fields.Address == "" {
+		t.Error("Address is empty, want non-empty")
+	}
+}
+
+func TestExtractFields_CommaSeparatedWithCompany(t *testing.T) {
+	// Format: name,phone,company,address
+	fields := ExtractFields("王五,13812345678,智腾达科技,广东省深圳市南山区桃源街道88号")
+	if fields.Name != "王五" {
+		t.Errorf("Name = %q, want %q", fields.Name, "王五")
+	}
+	if fields.Phone != "13812345678" {
+		t.Errorf("Phone = %q, want %q", fields.Phone, "13812345678")
+	}
+	if fields.Company != "智腾达科技" {
+		t.Errorf("Company = %q, want %q", fields.Company, "智腾达科技")
+	}
+	if fields.Address == "" {
+		t.Error("Address is empty, want non-empty")
+	}
+}
